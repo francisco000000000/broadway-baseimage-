@@ -6,9 +6,12 @@ ENV DARK_MODE='false'
 ENV GTK_THEME='Materia'
 ENV BG_GRADIENT="#ddd, #999"
 
-RUN apt-get update
-RUN apt-get install -y --no-install-recommends libgtk-3-0 libgtk-3-bin nginx gettext-base tmux wget materia-gtk-theme papirus-icon-theme
+RUN apt-get -y update && apt-get -y upgrade
+RUN apt-get install -y libgtk-3-0 libgtk-3-bin nginx gettext-base tmux wget materia-gtk-theme papirus-icon-theme
+
+RUN apt-get install -y htop
 RUN apt-get clean && apt-get autoclean && rm -rf /var/lib/apt/lists/*
+
 
 RUN rm -rf /usr/share/themes/Materia && mv /usr/share/themes/Materia-light /usr/share/themes/Materia
 

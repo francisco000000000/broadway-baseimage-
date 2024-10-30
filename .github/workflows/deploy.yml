@@ -33,4 +33,5 @@ jobs:
           context: .
           platforms: linux/amd64,linux/arm64
           push: true
-          tags: franciscodockers/broadway-baseimage-plus:$(date +%s)
+          tags: franciscodockers/broadway-baseimage-plus:${{ date-time format: 'yyyy-MM-dd-HH-mm-ss' }}
+

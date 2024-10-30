@@ -33,4 +33,4 @@ jobs:
           context: .
           platforms: linux/amd64,linux/arm64
           push: true
-          tags: franciscodockers/broadway-baseimage-plus:latest
+          tags: franciscodockers/broadway-baseimage-plus:$(date +%s)

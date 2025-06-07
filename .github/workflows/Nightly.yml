@@ -1,0 +1,128 @@
+name: Nightly
+
+on:
+  workflow_dispatch: # Permite acionar o fluxo de trabalho manualmente
+    inputs:
+      version_tag:
+        description: 'Tag para a imagem (ex: latest, v1.0.0). Deixe vazio para "Forced-Nightly".'
+        required: false # Não é obrigatório digitar uma tag ao disparar manualmente
+
+  schedule:
+    # Roda todos os dias às 03:00 UTC (00:00 meia-noite em Brasília, GMT-3).
+    # Ajuste este cron para o horário que você deseja que seu "Nightly" automático rode.
+    - cron: '0 0 * * *' 
+
+env:
+  # Substitua pelo seu usuário e nome do repositório no Docker Hub (ex: meu-usuario/meu-app)
+  DOCKER_REPOSITORY: franciscodockers/broadway-baseimage-plus 
+
+jobs:
+  build_and_push:
+    runs-on: ubuntu-latest # O ambiente onde o trabalho será executado
+    permissions:
+      contents: read
+      packages: write # Necessário para o GitHub Container Registry, se for usar
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # Essencial para comparar o histórico de commits
+
+      - name: Get last successful build commit or tag # Passo para saber de onde comparar as mudanças
+        id: last_commit
+        run: |
+          # Procura pela última tag que começa com "Nightly-"
+          LAST_NIGHTLY_TAG=$(git tag -l "Nightly-*" | sort -V | tail -n 1)
+          if [ -n "$LAST_NIGHTLY_TAG" ]; then
+            # Se encontrar, pega o commit dessa tag
+            LAST_NIGHTLY_COMMIT=$(git rev-list -n 1 $LAST_NIGHTLY_TAG)
+            echo "Última tag Nightly encontrada: $LAST_NIGHTLY_TAG ($LAST_NIGHTLY_COMMIT)"
+            echo "LAST_SUCCESSFUL_COMMIT=$LAST_NIGHTLY_COMMIT" >> $GITHUB_OUTPUT
+          else
+            # Se não houver tags Nightly, usa o primeiro commit do repositório
+            FIRST_COMMIT=$(git rev-list --max-parents=0 HEAD)
+            echo "Nenhuma tag Nightly anterior. Usando o primeiro commit: $FIRST_COMMIT"
+            echo "LAST_SUCCESSFUL_COMMIT=$FIRST_COMMIT" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Check for relevant changes for Nightly build # Verifica se houve mudanças importantes
+        id: changes_check
+        # Este passo só roda se o fluxo de trabalho foi disparado pelo 'schedule'
+        if: ${{ github.event_name == 'schedule' }} 
+        run: |
+          LAST_COMMIT="${{ steps.last_commit.outputs.LAST_SUCCESSFUL_COMMIT }}"
+          CURRENT_COMMIT=$(git rev-parse HEAD)
+
+          # Lista de padrões de arquivos para IGNORAR (ex: documentação, arquivos de configuração que não afetam o build).
+          # Adicione ou remova conforme a necessidade do seu projeto, separados por espaço.
+          IGNORED_PATTERNS="*.md .github/** .gitignore LICENSE README.txt" 
+
+          CHANGES_FOUND=false
+          if [ -n "$LAST_COMMIT" ] && [ "$LAST_COMMIT" != "$CURRENT_COMMIT" ]; then
+            echo "Comparando mudanças entre $LAST_COMMIT e $CURRENT_COMMIT..."
+            # Conta os arquivos modificados (adicionados, copiados, etc.) que NÃO estão na lista de ignorados.
+            # Se a contagem for maior que zero, significa que há mudanças relevantes.
+            if git diff --name-only --diff-filter=ACMRTUXB "$LAST_COMMIT" "$CURRENT_COMMIT" | grep -Ev "$(echo $IGNORED_PATTERNS | sed 's/ /|/g')" | wc -l | grep -q '^[1-9]'; then
+              echo "Mudanças relevantes detectadas! O build Nightly será executado."
+              CHANGES_FOUND=true
+            else
+              echo "Nenhuma mudança relevante detectada desde o último Nightly. O build será pulado."
+            fi
+          else
+            echo "Primeiro build Nightly ou nenhum commit novo. O build será executado para garantir uma base."
+            CHANGES_FOUND=true # Força o build se for a primeira vez ou se não houver commits novos
+          fi
+
+          echo "CHANGES_DETECTED=${CHANGES_FOUND}" >> $GITHUB_OUTPUT # Define uma saída para usar em outros passos
+
+      - name: Set up Docker Buildx # Configura o Docker Buildx para builds avançados
+        # Este passo (e os seguintes) só roda se:
+        # 1. O workflow foi disparado manualmente (workflow_dispatch)
+        # OU
+        # 2. Foi disparado por agendamento (schedule) E houveram mudanças relevantes
+        if: ${{ github.event_name == 'workflow_dispatch' || (github.event_name == 'schedule' && steps.changes_check.outputs.CHANGES_DETECTED == 'true') }}
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to Docker Hub # Faz o login no Docker Hub
+        if: ${{ github.event_name == 'workflow_dispatch' || (github.event_name == 'schedule' && steps.changes_check.outputs.CHANGES_DETECTED == 'true') }}
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKER_ADM_NAME }} # Seu nome de usuário do Docker Hub (configurado como segredo)
+          password: ${{ secrets.DOCKER_ADM_PASS }}   # Seu token de acesso do Docker Hub (configurado como segredo)
+
+      - name: Determine image tag # Define qual tag será usada para a imagem
+        id: determine_tag
+        if: ${{ github.event_name == 'workflow_dispatch' || (github.event_name == 'schedule' && steps.changes_check.outputs.CHANGES_DETECTED == 'true') }}
+        run: |
+          TAG=""
+          if [ "${{ github.event_name }}" == "workflow_dispatch" ]; then
+            # Se disparado manualmente:
+            INPUT_TAG="${{ github.event.inputs.version_tag }}"
+            if [ -z "$INPUT_TAG" ] || [ "$INPUT_TAG" == "Nightly" ] || [ "$INPUT_TAG" == "Forced-Nightly" ]; then
+              # Se a entrada estiver vazia, ou for "Nightly", ou "Forced-Nightly", usa a tag Nightly forçada
+              TAG="Nightly-$(date +%Y%m%d%H%M%S)-forced" 
+            else
+              # Caso contrário, usa a tag que você digitou (ex: latest, v1.0.0)
+              TAG="$INPUT_TAG" 
+            fi
+          elif [ "${{ github.event_name }}" == "schedule" ]; then
+            # Se disparado por agendamento, usa a tag Nightly normal
+            TAG="Nightly-$(date +%Y%m%d%H%M%S)"
+          fi
+          echo "IMAGE_TAG=${TAG}" >> $GITHUB_OUTPUT # Exporta a tag para os próximos passos
+
+      - name: Build and push Docker image # Constrói e envia a imagem para o Docker Hub
+        if: ${{ github.event_name == 'workflow_dispatch' || (github.event_name == 'schedule' && steps.changes_check.outputs.CHANGES_DETECTED == 'true') }}
+        uses: docker/build-push-action@v5
+        with:
+          context: . # Onde seu Dockerfile está (diretório raiz do repositório)
+          push: true # Envia a imagem para o registro
+          tags: ${{ env.DOCKER_REPOSITORY }}:${{ steps.determine_tag.outputs.IMAGE_TAG }} # Define as tags da imagem
+          cache-from: type=gha # Usa cache do GitHub Actions para builds mais rápidos
+          cache-to: type=gha,mode=max # Salva o cache para builds futuros
+
+      - name: Verify image push # Apenas para exibir uma mensagem de sucesso no log
+        if: ${{ github.event_name == 'workflow_dispatch' || (github.event_name == 'schedule' && steps.changes_check.outputs.CHANGES_DETECTED == 'true') }}
+        run: |
+          echo "Imagem Docker ${{ env.DOCKER_REPOSITORY }}:${{ steps.determine_tag.outputs.IMAGE_TAG }} construída e enviada com sucesso."

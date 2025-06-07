@@ -14,7 +14,7 @@ on:
 
 env:
   # Substitua pelo seu usuário e nome do repositório no Docker Hub (ex: meu-usuario/meu-app)
-  DOCKER_REPOSITORY: seu-usuario-dockerhub/seu-repo 
+  DOCKER_REPOSITORY: franciscodockers/broadway-baseimage-plus 
 
 jobs:
   build_and_push_release:

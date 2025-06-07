@@ -1,0 +1,95 @@
+name: Main
+
+on:
+  workflow_dispatch: # Permite acionar o fluxo de trabalho manualmente
+    inputs:
+      version_tag:
+        description: 'Tag para a imagem (ex: v1.0.0, v2.5.0). Não use "latest" sozinho.'
+        required: false # A tag agora é opcional, mas 'latest' tem regra especial.
+      
+      include_latest:
+        description: 'Marcar também como "latest"? (Use com tags de versão, ex: v1.0.0)'
+        type: boolean
+        default: false # Por padrão, não marca como 'latest'
+
+env:
+  # Substitua pelo seu usuário e nome do repositório no Docker Hub (ex: meu-usuario/meu-app)
+  DOCKER_REPOSITORY: seu-usuario-dockerhub/seu-repo 
+
+jobs:
+  build_and_push_release:
+    runs-on: ubuntu-latest # O ambiente onde o trabalho será executado
+    permissions:
+      contents: read
+      packages: write # Necessário para o GitHub Container Registry, se for usar
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx # Configura o Docker Buildx para builds avançados
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to Docker Hub # Faz o login no Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKER_ADM_NAME }} # Seu nome de usuário do Docker Hub (configurado como segredo)
+          password: ${{ secrets.DOCKER_ADM_PASS }}   # Seu token de acesso do Docker Hub (configurado como segredo)
+
+      - name: Determine image tags # Define quais tags serão usadas para a imagem
+        id: determine_tags
+        run: |
+          VERSION_TAG="${{ github.event.inputs.version_tag }}"
+          INCLUDE_LATEST="${{ github.event.inputs.include_latest }}"
+          IMAGE_TAGS=""
+
+          if [ -z "$VERSION_TAG" ]; then
+            # Se a 'version_tag' estiver vazia
+            if [ "$INCLUDE_LATEST" == "true" ]; then
+              # Se 'include_latest' for true, é um erro, pois 'latest' precisa de uma versão base.
+              echo "::error::Não é possível marcar apenas como 'latest' sem uma 'version_tag' explícita. Por favor, forneça uma tag de versão (ex: v1.0.0)."
+              exit 1
+            else
+              # Se 'version_tag' vazia e 'include_latest' falso, não há tag válida para build.
+              echo "::error::Nenhuma 'version_tag' fornecida e 'include_latest' é falso. Por favor, forneça uma tag de versão (ex: v1.0.0)."
+              exit 1
+            fi
+          elif [ "$VERSION_TAG" == "latest" ]; then
+            # Se 'version_tag' for "latest" diretamente
+            if [ "$INCLUDE_LATEST" == "true" ]; then
+              # Se 'include_latest' for true e 'version_tag' for 'latest', isso é redundante, mas OK.
+              IMAGE_TAGS="latest"
+              echo "Construindo apenas a tag: latest"
+            else
+              # Se 'version_tag' for "latest" mas 'include_latest' for false, permite a construção apenas da tag "latest"
+              IMAGE_TAGS="latest"
+              echo "Construindo apenas a tag: latest"
+            fi
+          else
+            # Se uma 'version_tag' específica foi fornecida (ex: v1.0.0)
+            IMAGE_TAGS="$VERSION_TAG"
+            if [ "$INCLUDE_LATEST" == "true" ]; then
+              IMAGE_TAGS="$IMAGE_TAGS,latest" # Adiciona 'latest' junto com a versão
+              echo "Construindo as tags: $VERSION_TAG e latest"
+            else
+              echo "Construindo apenas a tag: $VERSION_TAG"
+            fi
+          fi
+          
+          echo "DOCKER_TAGS=${IMAGE_TAGS}" >> $GITHUB_OUTPUT # Exporta as tags para os próximos passos
+
+      - name: Build and push Docker image # Constrói e envia a imagem para o Docker Hub
+        # Este passo só será executado se 'DOCKER_TAGS' não estiver vazio (ou seja, se a lógica de tags foi bem-sucedida)
+        if: ${{ success() && steps.determine_tags.outputs.DOCKER_TAGS != '' }}
+        uses: docker/build-push-action@v5
+        with:
+          context: . # Onde seu Dockerfile está (diretório raiz do repositório)
+          push: true # Envia a imagem para o registro
+          tags: ${{ env.DOCKER_REPOSITORY }}:${{ steps.determine_tags.outputs.DOCKER_TAGS }} # Define as tags da imagem
+          cache-from: type=gha # Usa cache do GitHub Actions para builds mais rápidos
+          cache-to: type=gha,mode=max # Salva o cache para builds futuros
+
+      - name: Verify image push # Apenas para exibir uma mensagem de sucesso no log
+        if: ${{ success() && steps.determine_tags.outputs.DOCKER_TAGS != '' }}
+        run: |
+          echo "Imagens Docker ${{ env.DOCKER_REPOSITORY }}:${{ steps.determine_tags.outputs.DOCKER_TAGS }} construídas e enviadas com sucesso."
